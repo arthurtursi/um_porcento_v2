@@ -14,28 +14,29 @@ THRESHOLDS     = [0.01, 0.02]               # 1% e 2%
 FINE_SL        = [0.0020, 0.0050, 0.0075]  # 0.20%, 0.50%, 0.75%
 FINE_SG        = [0.0020, 0.0050, 0.0075]
 
+# Todas as combinações (SL, SG) — 3×3 = 9 pares
+STOP_PAIRS     = [(sl, sg) for sl in FINE_SL for sg in FINE_SG]
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _stop_levels(entry: float, direction: str) -> dict:
-    """Calcula todos os níveis de stop loss e stop gain para uma entrada."""
+def _stop_levels(entry: float, direction: str, sl_pct: float, sg_pct: float) -> dict:
+    """Calcula níveis de stop loss e stop gain para um par (sl_pct, sg_pct) específico."""
     sign_sl = +1 if direction == "SELL" else -1  # SL vai contra a posição
     sign_sg = -1 if direction == "SELL" else +1  # SG vai a favor
-
-    result = {}
-    for pct in FINE_SL:
-        label = f"SL_{pct*100:.2f}pct".replace(".", "_")
-        result[label] = round(entry * (1 + sign_sl * pct), 2)
-    for pct in FINE_SG:
-        label = f"SG_{pct*100:.2f}pct".replace(".", "_")
-        result[label] = round(entry * (1 + sign_sg * pct), 2)
-    return result
+    return {
+        "SL_pct":   sl_pct,
+        "SG_pct":   sg_pct,
+        "SL_price": round(entry * (1 + sign_sl * sl_pct), 2),
+        "SG_price": round(entry * (1 + sign_sg * sg_pct), 2),
+    }
 
 
 def _make_signal(ticker, analysis_type, ref_price, ref_datetime,
                  entry_price, entry_dt, direction, threshold_pct,
+                 sl_pct, sg_pct,
                  signal_date=None, natural_sg=None) -> dict:
-    """Monta o dict de um sinal e anexa os stops."""
+    """Monta o dict de um sinal para um par de stops (sl_pct, sg_pct) específico."""
     row = {
         "Signal_Date":     pd.Timestamp(signal_date).strftime("%Y-%m-%d") if signal_date is not None else None,
         "Ticker":          ticker,
@@ -49,7 +50,7 @@ def _make_signal(ticker, analysis_type, ref_price, ref_datetime,
         # SG natural = ref_price (alvo de reversão à média)
         "SG_Natural":      round(natural_sg, 2) if natural_sg is not None else None,
     }
-    row.update(_stop_levels(entry_price, direction))
+    row.update(_stop_levels(entry_price, direction, sl_pct, sg_pct))
     return row
 
 
@@ -72,23 +73,27 @@ def _check_signals(ticker, analysis_type, ref_price, ref_datetime,
             # Primeiro candle cujo High >= sell_level
             hit = today_candles[today_candles["High"] >= sell_level]
             if not hit.empty:
-                candle   = hit.iloc[0]
-                signals.append(_make_signal(
-                    ticker, analysis_type, ref_price, ref_datetime,
-                    sell_level, candle["Datetime"],
-                    "SELL", thr, signal_date=signal_date, natural_sg=natural_sg
-                ))
+                candle = hit.iloc[0]
+                for sl_pct, sg_pct in STOP_PAIRS:
+                    signals.append(_make_signal(
+                        ticker, analysis_type, ref_price, ref_datetime,
+                        sell_level, candle["Datetime"],
+                        "SELL", thr, sl_pct, sg_pct,
+                        signal_date=signal_date, natural_sg=natural_sg
+                    ))
 
         if only_signal != "SELL":
             # Primeiro candle cujo Low <= buy_level
             hit = today_candles[today_candles["Low"] <= buy_level]
             if not hit.empty:
-                candle   = hit.iloc[0]
-                signals.append(_make_signal(
-                    ticker, analysis_type, ref_price, ref_datetime,
-                    buy_level, candle["Datetime"],
-                    "BUY", thr, signal_date=signal_date, natural_sg=natural_sg
-                ))
+                candle = hit.iloc[0]
+                for sl_pct, sg_pct in STOP_PAIRS:
+                    signals.append(_make_signal(
+                        ticker, analysis_type, ref_price, ref_datetime,
+                        buy_level, candle["Datetime"],
+                        "BUY", thr, sl_pct, sg_pct,
+                        signal_date=signal_date, natural_sg=natural_sg
+                    ))
     return signals
 
 
@@ -189,7 +194,7 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, ref_date: pd.Timestamp = None)
     deduped = []
     dropped = 0
     for s in signals:
-        key = (s["Analysis_Type"], s["Signal"], s["Threshold_pct"])
+        key = (s["Analysis_Type"], s["Signal"], s["Threshold_pct"], s["SL_pct"], s["SG_pct"])
         if key not in seen:
             seen.add(key)
             s["Deduped"] = False

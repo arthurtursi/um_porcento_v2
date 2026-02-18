@@ -43,21 +43,6 @@ def _load_cache(data_cache_dir: str) -> dict:
     return cache
 
 
-def _sl_sg_pairs(columns: list) -> list[tuple[str, str]]:
-    """
-    Retorna pares (sl_col, sg_col) a avaliar.
-    Emparelha por posição dentro de cada grupo (fine / broad).
-    """
-    sl_cols  = sorted([c for c in columns if c.startswith("SL_")])
-    sg_cols  = sorted([c for c in columns if c.startswith("SG_")])
-    # Separa fine (contém '_' no sufixo, ex: SL_0_20pct) de broad (ex: SL_10pct)
-    fine_sl  = [c for c in sl_cols if c[3:4] == "0"]   # SL_0_*
-    broad_sl = [c for c in sl_cols if c[3:4] != "0"]   # SL_10pct …
-    fine_sg  = [c for c in sg_cols if c[3:4] == "0"]
-    broad_sg = [c for c in sg_cols if c[3:4] != "0"]
-    pairs = list(zip(fine_sl, fine_sg)) + list(zip(broad_sl, broad_sg))
-    return pairs
-
 
 def _evaluate_candles(
     candles: pd.DataFrame,
@@ -158,10 +143,10 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
 
     signals_df["Signal_Date"] = pd.to_datetime(signals_df["Signal_Date"], errors="coerce")
 
-    pairs  = _sl_sg_pairs(signals_df.columns.tolist())
-
-    if not pairs:
-        print("[EVAL] Nenhum par SL/SG encontrado nas colunas do arquivo de sinais.")
+    # Valida que as colunas do novo paradigma existem
+    required = {"SL_pct", "SG_pct", "SL_price", "SG_price"}
+    if not required.issubset(signals_df.columns):
+        print(f"[EVAL] Colunas esperadas não encontradas: {required - set(signals_df.columns)}")
         return
 
     results = []
@@ -206,36 +191,34 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         if day_df.empty:
             continue
 
-        for sl_col, sg_col in pairs:
-            sl_price = sig.get(sl_col)
-            sg_price = sig.get(sg_col)
+        sl_pct   = sig.get("SL_pct")
+        sg_pct   = sig.get("SG_pct")
+        sl_price = sig.get("SL_price")
+        sg_price = sig.get("SG_price")
 
-            if pd.isna(sl_price) or pd.isna(sg_price):
-                continue
+        if pd.isna(sl_price) or pd.isna(sg_price):
+            continue
 
-            res = _evaluate_candles(day_df, direction, entry, sl_price, sg_price)
+        res = _evaluate_candles(day_df, direction, entry, sl_price, sg_price)
 
-            results.append({
-                "Signal_Date":    sig_date.strftime("%Y-%m-%d"),
-                "Ticker":         ticker,
-                "Analysis_Type":  sig["Analysis_Type"],
-                "Signal":         direction,
-                "Threshold_pct":  sig["Threshold_pct"],
-                "Entry_Price":    entry,
-                "SL_col":         sl_col,
-                "SL_Price":       sl_price,
-                "SG_col":         sg_col,
-                "SG_Price":       sg_price,
-                **res,
-            })
+        results.append({
+            "Signal_Date":    sig_date.strftime("%Y-%m-%d"),
+            "Ticker":         ticker,
+            "Analysis_Type":  sig["Analysis_Type"],
+            "Signal":         direction,
+            "Threshold_pct":  sig["Threshold_pct"],
+            "Entry_Price":    entry,
+            "SL_pct":         sl_pct,
+            "SL_Price":       sl_price,
+            "SG_pct":         sg_pct,
+            "SG_Price":       sg_price,
+            **res,
+        })
 
-        # ── SG_Natural: avalia cada SL contra o alvo de reversão (ref_price) ──
+        # ── SG_Natural: avalia o mesmo SL contra o alvo de reversão (ref_price) ──
         sg_natural = sig.get("SG_Natural")
         if pd.notna(sg_natural):
-            for sl_col, _ in pairs:
-                sl_price = sig.get(sl_col)
-                if pd.isna(sl_price):
-                    continue
+            if not pd.isna(sl_price):
                 res = _evaluate_candles(day_df, direction, entry, sl_price, sg_natural)
                 results.append({
                     "Signal_Date":    sig_date.strftime("%Y-%m-%d"),
@@ -244,9 +227,9 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
                     "Signal":         direction,
                     "Threshold_pct":  sig["Threshold_pct"],
                     "Entry_Price":    entry,
-                    "SL_col":         sl_col,
+                    "SL_pct":         sl_pct,
                     "SL_Price":       sl_price,
-                    "SG_col":         "SG_Natural",
+                    "SG_pct":         "Natural",
                     "SG_Price":       sg_natural,
                     **res,
                 })
@@ -283,13 +266,13 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     total_sinais = len(signals_df)
     print(f"[EVAL] Sinais únicos a avaliar (pós-dedup por estratégia): {total_sinais}")
 
-    # ── Resumo 1: por Stop (SL_col / SG_col) ─────────────────────────────
-    summary_stop = _add_flag(result_df.groupby(["SL_col", "SG_col"]).agg(**agg_spec).round(4))
+    # ── Resumo 1: por Stop (SL_pct / SG_pct) ─────────────────────────────
+    summary_stop = _add_flag(result_df.groupby(["SL_pct", "SG_pct"]).agg(**agg_spec).round(4))
 
     # ── Resumo 2: por Estratégia (Analysis_Type + Threshold + Stop) ───────
     summary_strategy = _add_flag(
         result_df
-        .groupby(["Analysis_Type", "Threshold_pct", "Signal", "SL_col", "SG_col"])
+        .groupby(["Analysis_Type", "Threshold_pct", "Signal", "SL_pct", "SG_pct"])
         .agg(**agg_spec)
         .round(4)
     )
@@ -313,6 +296,15 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     summary_strategy.to_csv(strat_path)
     summary_consolidated.to_csv(consol_path)
 
+    # ── Salva também em xlsx ──────────────────────────────────────────────────
+    xlsx_path = os.path.join(out_dir, f"eval_{base_name}.xlsx")
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        result_df.to_excel(writer, sheet_name="Detalhado", index=False)
+        summary_stop.to_excel(writer, sheet_name="Por_Stop")
+        summary_strategy.to_excel(writer, sheet_name="Por_Estrategia")
+        summary_consolidated.to_excel(writer, sheet_name="Consolidado")
+    print(f"[EVAL] Arquivo xlsx salvo em:  {xlsx_path}")
+
     print(f"[EVAL] {len(result_df)} operação(ões) detalhadas em: {out_path}")
     print(f"[EVAL] Resumo por stop:       {stop_path}")
     print(f"[EVAL] Resumo por estratégia: {strat_path}")
@@ -326,7 +318,7 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         print(recomendadas[["Operacoes", "WinRate_pct", "PL_BRL_total", "PL_BRL_medio", "PL_BRL_max", "PL_BRL_min"]].to_string())
     else:
         print("\n★  Nenhuma estratégia atingiu os critérios (WinRate ≥ 60% e lucro positivo).")
-    print("\n── Resumo por Stop (SL/SG) ─────────────────────────────────────────")
+    print("\n── Resumo por Stop (SL_pct x SG_pct) ──────────────────────────────")
     print(summary_stop.to_string())
 
     return result_df
@@ -334,7 +326,10 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
+
+
+def backtest():
     parser = argparse.ArgumentParser(description="Avalia resultados do backtest intraday")
     parser.add_argument(
         "signals_file",
