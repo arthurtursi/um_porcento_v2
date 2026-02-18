@@ -14,9 +14,6 @@ THRESHOLDS     = [0.01, 0.02]               # 1% e 2%
 FINE_SL        = [0.0020, 0.0050, 0.0075]  # 0.20%, 0.50%, 0.75%
 FINE_SG        = [0.0020, 0.0050, 0.0075]
 
-# Stops amplos: aplicados sobre o preço de entrada
-BROAD_SL       = [0.10, 0.25, 0.50]        # 10%, 25%, 50%
-BROAD_SG       = [0.10, 0.25, 0.50, 1.00]  # 10%, 25%, 50%, 100%
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -31,12 +28,6 @@ def _stop_levels(entry: float, direction: str) -> dict:
         result[label] = round(entry * (1 + sign_sl * pct), 2)
     for pct in FINE_SG:
         label = f"SG_{pct*100:.2f}pct".replace(".", "_")
-        result[label] = round(entry * (1 + sign_sg * pct), 2)
-    for pct in BROAD_SL:
-        label = f"SL_{int(pct*100)}pct"
-        result[label] = round(entry * (1 + sign_sl * pct), 2)
-    for pct in BROAD_SG:
-        label = f"SG_{int(pct*100)}pct"
         result[label] = round(entry * (1 + sign_sg * pct), 2)
     return result
 
