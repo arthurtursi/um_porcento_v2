@@ -258,24 +258,36 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     result_df = pd.DataFrame(results)
 
     agg_spec = {
-        "Operacoes":    ("PL_BRL", "count"),
-        "PL_pts_total": ("PL_abs", "sum"),
-        "PL_BRL_total": ("PL_BRL", "sum"),
-        "PL_pct_medio": ("PL_pct", "mean"),
-        "SL_hits":      ("Exit_Reason", lambda x: (x == "SL").sum()),
-        "SG_hits":      ("Exit_Reason", lambda x: (x == "SG").sum()),
-        "EOD_hits":     ("Exit_Reason", lambda x: (x == "EOD").sum()),
+        "Operacoes":      ("PL_BRL", "count"),
+        "PL_pts_total":   ("PL_abs", "sum"),
+        "PL_pts_medio":   ("PL_abs", "mean"),
+        "PL_BRL_total":   ("PL_BRL", "sum"),
+        "PL_BRL_medio":   ("PL_BRL", "mean"),
+        "PL_BRL_max":     ("PL_BRL", "max"),
+        "PL_BRL_min":     ("PL_BRL", "min"),
+        "PL_pct_medio":   ("PL_pct", "mean"),
+        "SG_hits":        ("Exit_Reason", lambda x: (x == "SG").sum()),
+        "SL_hits":        ("Exit_Reason", lambda x: (x == "SL").sum()),
+        "EOD_hits":       ("Exit_Reason", lambda x: (x == "EOD").sum()),
+        "WinRate_pct":    ("Exit_Reason", lambda x: round(100 * (x == "SG").sum() / len(x), 2)),
+        "LossRate_pct":   ("Exit_Reason", lambda x: round(100 * (x != "SG").sum() / len(x), 2)),
     }
+
+    def _add_flag(df: pd.DataFrame) -> pd.DataFrame:
+        """Adiciona coluna Recomendada: True se WinRate >= 60% E PL_BRL_total > 0."""
+        df = df.copy()
+        df["Recomendada"] = (df["WinRate_pct"] >= 60) & (df["PL_BRL_total"] > 0)
+        return df
 
     # ── Métrica de dedup: informa sinais únicos processados ──────────────────
     total_sinais = len(signals_df)
     print(f"[EVAL] Sinais únicos a avaliar (pós-dedup por estratégia): {total_sinais}")
 
     # ── Resumo 1: por Stop (SL_col / SG_col) ─────────────────────────────
-    summary_stop = result_df.groupby(["SL_col", "SG_col"]).agg(**agg_spec).round(4)
+    summary_stop = _add_flag(result_df.groupby(["SL_col", "SG_col"]).agg(**agg_spec).round(4))
 
     # ── Resumo 2: por Estratégia (Analysis_Type + Threshold + Stop) ───────
-    summary_strategy = (
+    summary_strategy = _add_flag(
         result_df
         .groupby(["Analysis_Type", "Threshold_pct", "Signal", "SL_col", "SG_col"])
         .agg(**agg_spec)
@@ -283,7 +295,7 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     )
 
     # ── Resumo 3: consolidado por Estratégia (sem detalhe de stop) ────────
-    summary_consolidated = (
+    summary_consolidated = _add_flag(
         result_df
         .groupby(["Analysis_Type", "Threshold_pct", "Signal"])
         .agg(**agg_spec)
@@ -308,6 +320,12 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
 
     print("\n── Consolidado por Estratégia ───────────────────────────────────────")
     print(summary_consolidated.to_string())
+    recomendadas = summary_consolidated[summary_consolidated["Recomendada"] == True]
+    if not recomendadas.empty:
+        print("\n★  Estratégias RECOMENDADAS (WinRate ≥ 60% e lucro positivo):")
+        print(recomendadas[["Operacoes", "WinRate_pct", "PL_BRL_total", "PL_BRL_medio", "PL_BRL_max", "PL_BRL_min"]].to_string())
+    else:
+        print("\n★  Nenhuma estratégia atingiu os critérios (WinRate ≥ 60% e lucro positivo).")
     print("\n── Resumo por Stop (SL/SG) ─────────────────────────────────────────")
     print(summary_stop.to_string())
 
@@ -317,7 +335,6 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    run_analysis(start="2024-01-01", to="2026-03-01")  # modo diário: start=ontem, to=hoje
     parser = argparse.ArgumentParser(description="Avalia resultados do backtest intraday")
     parser.add_argument(
         "signals_file",
