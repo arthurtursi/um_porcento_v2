@@ -199,6 +199,17 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         if pd.isna(sl_price) or pd.isna(sg_price):
             continue
 
+        # ── Diagnóstico: amplitude do dia para validar se SL era alcançável ────
+        day_low_min  = day_df["Low"].min()
+        day_high_max = day_df["High"].max()
+        # SL_reachable: o preço cruzou o nível de SL em algum momento do dia?
+        # BUY  → SL é atingido quando o LOW cai abaixo do sl_price
+        # SELL → SL é atingido quando o HIGH sobe acima do sl_price
+        if direction == "BUY":
+            sl_reachable = bool(day_low_min  <= sl_price)
+        else:
+            sl_reachable = bool(day_high_max >= sl_price)
+
         res = _evaluate_candles(day_df, direction, entry, sl_price, sg_price)
 
         results.append({
@@ -212,6 +223,9 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
             "SL_Price":       sl_price,
             "SG_pct":         sg_pct,
             "SG_Price":       sg_price,
+            "Day_Low_min":    round(day_low_min,  2),
+            "Day_High_max":   round(day_high_max, 2),
+            "SL_reachable":   sl_reachable,
             **res,
         })
 
@@ -231,6 +245,9 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
                     "SL_Price":       sl_price,
                     "SG_pct":         "Natural",
                     "SG_Price":       sg_natural,
+                    "Day_Low_min":    round(day_low_min,  2),
+                    "Day_High_max":   round(day_high_max, 2),
+                    "SL_reachable":   sl_reachable,
                     **res,
                 })
 
@@ -239,6 +256,20 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         return
 
     result_df = pd.DataFrame(results)
+
+    # ── Diagnóstico de consistência do SL ────────────────────────────────────
+    # Caso A: Exit_Reason=SL mas SL_reachable=False → possível bug
+    sl_false_hit = result_df[(result_df["Exit_Reason"] == "SL") & (~result_df["SL_reachable"])]
+    if not sl_false_hit.empty:
+        print(f"[EVAL][WARN] {len(sl_false_hit)} caso(s) com SL registrado mas SL_reachable=False (checar bug!):")
+        print(sl_false_hit[["Signal_Date","Ticker","Signal","SL_Price","Day_Low_min","Day_High_max","Exit_Reason"]].to_string())
+    else:
+        print("[EVAL] Diagnóstico SL: OK — todos os SL registrados tinham SL_reachable=True.")
+
+    # Caso B: SL_reachable=True mas Exit_Reason != SL → SL era atingível mas saiu por SG ou EOD antes (normal)
+    sl_reachable_no_hit = result_df[(result_df["SL_reachable"]) & (result_df["Exit_Reason"] != "SL")]
+    pct_reachable_escaped = round(100 * len(sl_reachable_no_hit) / len(result_df), 1) if len(result_df) else 0
+    print(f"[EVAL] SL era atingível no dia mas saiu antes (SG/EOD): {len(sl_reachable_no_hit)} ({pct_reachable_escaped}% do total) — normal quando SG é atingido primeiro.")
 
     agg_spec = {
         "Operacoes":      ("PL_BRL", "count"),
