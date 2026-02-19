@@ -4,5 +4,6 @@ from analyze import run_analysis
 
 if __name__ == "__main__":
     update_data_cache()
-    run_analysis(start="2024-01-01", to="2026-03-01")  # modo diário: start=ontem, to=hoje
+    # run_analysis(start="2026-01-01", to="2025-06-01")  # modo diário: start=ontem, to=hoje
+    run_analysis(start="2025-06-01", to="2026-01-01")  # modo diário: start=ontem, to=hoje
     backtest()
