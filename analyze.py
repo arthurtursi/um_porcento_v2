@@ -17,6 +17,23 @@ FINE_SG        = [0.0020, 0.0050, 0.0075, 0.0100]
 # Todas as combinações (SL, SG) — 4×4 = 16 pares
 STOP_PAIRS     = [(sl, sg) for sl in FINE_SL for sg in FINE_SG]
 
+# Chaveamentos / feature flags
+#   USE_TREND_FILTER: lista de valores a testar simultaneamente.
+#     [False]        → sem filtro (comportamento original)
+#     [True]         → só com filtro MM20
+#     [False, True]  → gera ambas as variantes no mesmo backtest;
+#                      Analysis_Type recebe sufixo _trend_off / _trend_on
+USE_TREND_FILTER  = [False, True]
+MM20_WINDOW       = 20     # janela (dias) da média móvel de tendência
+#   USE_ENTRY_WINDOW: lista de valores a testar simultaneamente.
+#     [False]        → aceita entradas até 16h (comportamento original)
+#     [True]         → só até ENTRY_HOUR_END
+#     [False, True]  → gera ambas as variantes no mesmo backtest;
+#                      Analysis_Type recebe sufixo _ew_off / _ew_on
+USE_ENTRY_WINDOW  = [False, True]
+ENTRY_HOUR_START  = 9
+ENTRY_HOUR_END    = 10
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -130,62 +147,103 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, ref_date: pd.Timestamp = None)
     if pd.isna(today_open):
         return [], 0
 
-    # Candles do dia até 16h para varredura de entrada intraday
-    today_candles = today_df[
-        (today_df["Datetime"].dt.hour >= 9) &
-        (today_df["Datetime"].dt.hour <= 16)
-    ].copy()
-
     signals = []
 
-    # ── 2.1  Abertura de hoje vs. abertura do dia anterior ───────────────────
-    prev_open    = prev_day_df.iloc[0]["Open"]
-    prev_open_dt = prev_day_df.iloc[0]["Datetime"]
-    if not pd.isna(prev_open):
-        signals += _check_signals(
-            ticker, "open_vs_prev_open",
-            prev_open, prev_open_dt, today_candles, signal_date=today
-        )
+    _ew_variants    = USE_ENTRY_WINDOW if isinstance(USE_ENTRY_WINDOW, list) else [USE_ENTRY_WINDOW]
+    _multi_ew       = isinstance(USE_ENTRY_WINDOW, list) and len(_ew_variants) > 1
+    _trend_variants = USE_TREND_FILTER if isinstance(USE_TREND_FILTER, list) else [USE_TREND_FILTER]
+    _multi_trend    = isinstance(USE_TREND_FILTER, list) and len(_trend_variants) > 1
 
-    # ── 2.2  Abertura de hoje vs. fechamento do dia anterior ─────────────────
-    prev_close    = prev_day_df.iloc[-1]["Close"]
-    prev_close_dt = prev_day_df.iloc[-1]["Datetime"]
-    if not pd.isna(prev_close):
-        signals += _check_signals(
-            ticker, "open_vs_prev_close",
-            prev_close, prev_close_dt, today_candles, signal_date=today
-        )
+    for _use_ew in _ew_variants:
+        ew_tag         = ("_ew_on" if _use_ew else "_ew_off") if _multi_ew else ""
+        entry_hour_end = ENTRY_HOUR_END if _use_ew else 16
+        today_candles  = today_df[
+            (today_df["Datetime"].dt.hour >= ENTRY_HOUR_START) &
+            (today_df["Datetime"].dt.hour <= entry_hour_end)
+        ].copy()
 
-    # ── 2.3  Abertura de hoje vs. hora de maior alta do dia anterior ─────────
-    max_high_idx = prev_day_df["High"].idxmax()
-    max_high_row = prev_day_df.loc[max_high_idx]
-    if not pd.isna(max_high_row["High"]):
-        signals += _check_signals(
-            ticker, "open_vs_prev_max_high",
-            max_high_row["High"], max_high_row["Datetime"], today_candles,
-            signal_date=today, only_signal="SELL",
-            natural_sg=max_high_row["High"]
-        )
+        # ── 2.3  Abertura de hoje vs. hora de maior alta do dia anterior ─────────
+        # (direção fixa SELL — não afetada pelo filtro de tendência)
+        max_high_idx = prev_day_df["High"].idxmax()
+        max_high_row = prev_day_df.loc[max_high_idx]
+        if not pd.isna(max_high_row["High"]):
+            signals += _check_signals(
+                ticker, "open_vs_prev_max_high" + ew_tag,
+                max_high_row["High"], max_high_row["Datetime"], today_candles,
+                signal_date=today, only_signal="SELL",
+                natural_sg=max_high_row["High"]
+            )
 
-    # ── 2.8  Abertura de hoje vs. hora de menor baixa do dia anterior ──────────
-    min_low_idx = prev_day_df["Low"].idxmin()
-    min_low_row = prev_day_df.loc[min_low_idx]
-    if not pd.isna(min_low_row["Low"]):
-        signals += _check_signals(
-            ticker, "open_vs_prev_min_low",
-            min_low_row["Low"], min_low_row["Datetime"], today_candles,
-            signal_date=today, only_signal="BUY",
-            natural_sg=min_low_row["Low"]
-        )
+        # ── 2.8  Abertura de hoje vs. hora de menor baixa do dia anterior ─────────
+        # (direção fixa BUY — não afetada pelo filtro de tendência)
+        min_low_idx = prev_day_df["Low"].idxmin()
+        min_low_row = prev_day_df.loc[min_low_idx]
+        if not pd.isna(min_low_row["Low"]):
+            signals += _check_signals(
+                ticker, "open_vs_prev_min_low" + ew_tag,
+                min_low_row["Low"], min_low_row["Datetime"], today_candles,
+                signal_date=today, only_signal="BUY",
+                natural_sg=min_low_row["Low"]
+            )
 
-    # ── 2.7  Abertura de hoje vs. Close da hora de maior volume do dia ant. ──
-    max_vol_idx = prev_day_df["Volume"].idxmax()
-    max_vol_row = prev_day_df.loc[max_vol_idx]
-    if not pd.isna(max_vol_row["Close"]):
-        signals += _check_signals(
-            ticker, "open_vs_prev_max_vol_close",
-            max_vol_row["Close"], max_vol_row["Datetime"], today_candles, signal_date=today
-        )
+        # ── Estratégias afetadas pelo filtro de tendência ─────────────────────────
+        for _use_trend in _trend_variants:
+            trend_tag  = ("_trend_on" if _use_trend else "_trend_off") if _multi_trend else ""
+            full_tag   = trend_tag + ew_tag
+            trend_bias = None
+
+            if _use_trend:
+                daily_closes = (
+                    prev_df.groupby(prev_df["Datetime"].dt.normalize())["Close"]
+                    .last()
+                    .sort_index()
+                )
+                if len(daily_closes) >= MM20_WINDOW:
+                    mm20 = daily_closes.iloc[-MM20_WINDOW:].mean()
+                    trend_bias = "BUY" if today_open > mm20 else "SELL"
+
+            # 2.1  Abertura de hoje vs. abertura do dia anterior
+            prev_open    = prev_day_df.iloc[0]["Open"]
+            prev_open_dt = prev_day_df.iloc[0]["Datetime"]
+            if not pd.isna(prev_open):
+                signals += _check_signals(
+                    ticker, "open_vs_prev_open" + full_tag,
+                    prev_open, prev_open_dt, today_candles, signal_date=today,
+                    only_signal=trend_bias
+                )
+
+            # 2.2  Abertura de hoje vs. fechamento do dia anterior
+            prev_close    = prev_day_df.iloc[-1]["Close"]
+            prev_close_dt = prev_day_df.iloc[-1]["Datetime"]
+            if not pd.isna(prev_close):
+                signals += _check_signals(
+                    ticker, "open_vs_prev_close" + full_tag,
+                    prev_close, prev_close_dt, today_candles, signal_date=today,
+                    only_signal=trend_bias
+                )
+
+            # 2.7  Abertura de hoje vs. Close da hora de maior volume do dia ant.
+            max_vol_idx = prev_day_df["Volume"].idxmax()
+            max_vol_row = prev_day_df.loc[max_vol_idx]
+            if not pd.isna(max_vol_row["Close"]):
+                signals += _check_signals(
+                    ticker, "open_vs_prev_max_vol_close" + full_tag,
+                    max_vol_row["Close"], max_vol_row["Datetime"], today_candles, signal_date=today,
+                    only_signal=trend_bias
+                )
+
+            # 2.6  Abertura de hoje vs. VWAP do dia anterior
+            vol_sum = prev_day_df["Volume"].sum()
+            if vol_sum > 0:
+                typical     = (prev_day_df["High"] + prev_day_df["Low"] + prev_day_df["Close"]) / 3
+                vwap        = (typical * prev_day_df["Volume"]).sum() / vol_sum
+                vwap_ref_dt = prev_day_df.iloc[-1]["Datetime"]
+                if not pd.isna(vwap):
+                    signals += _check_signals(
+                        ticker, "open_vs_prev_vwap" + full_tag,
+                        vwap, vwap_ref_dt, today_candles, signal_date=today,
+                        only_signal=trend_bias
+                    )
 
     # ── Dedup: por (analysis_type, direction, threshold_pct) só o primeiro candle ativado vence
     # Ordena pelo Entry_DT para garantir que o mais cedo leva

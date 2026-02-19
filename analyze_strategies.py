@@ -20,7 +20,7 @@ import pandas as pd
 FILTER_WINRATE = 60.0   # WinRate_pct mínimo (%)
 FILTER_MED_BRL = 50.0   # PL_BRL_medio mínimo por trade (R$)
 MIN_TRADES     = 10     # Operações mínimas por período para ser válido
-BACKTEST_DIR   = "backtest"
+BACKTEST_DIR   = "backtest//new"
 TOP_N          = 10     # quantas configs exibir no ranking final
 
 KEY_COLS = ["Analysis_Type", "Threshold_pct", "Signal", "SL_pct", "SG_pct"]

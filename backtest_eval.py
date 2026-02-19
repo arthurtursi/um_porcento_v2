@@ -13,6 +13,7 @@ Resultado salvo em backtest/backtest_eval_<arquivo>.csv
 """
 
 import os
+import re
 import argparse
 import pandas as pd
 
@@ -20,10 +21,40 @@ from analyze import run_analysis
 
 DATA_CACHE_DIR  = "data_cache"
 BACKTEST_DIR    = "backtest"
-EOD_HOUR        = 16    # encerramento forçado às 16h
-POINT_VALUE_BRL = 0.20  # R$ por ponto (WIN mini-índice)
+EOD_HOUR          = 16    # encerramento forçado às 16h
+POINT_VALUE_BRL   = 0.20  # R$ por ponto (WIN mini-índice)
+
+# Trailing stop
+USE_TRAILING_STOP = False  # True → substitui SG fixo por stop móvel
+TRAIL_PCT         = 0.003  # distância do trailing stop (0.30%)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_analysis_type(at: str):
+    """
+    Extrai (base_strategy, trend_filter, entry_window) de um Analysis_Type.
+
+    Exemplos:
+      'open_vs_prev_close_trend_on_ew_off'  → ('open_vs_prev_close', True,  False)
+      'open_vs_prev_close_trend_off_ew_on'  → ('open_vs_prev_close', False, True)
+      'open_vs_prev_close'                  → ('open_vs_prev_close', None,  None)
+    """
+    base  = at
+    trend = None
+    ew    = None
+
+    m = re.search(r'_(trend_on|trend_off)', base)
+    if m:
+        trend = (m.group(1) == "trend_on")
+        base  = base[:m.start()] + base[m.end():]
+
+    m = re.search(r'_(ew_on|ew_off)', base)
+    if m:
+        ew   = (m.group(1) == "ew_on")
+        base = base[:m.start()] + base[m.end():]
+
+    return base, trend, ew
+
 
 def _load_cache(data_cache_dir: str) -> dict:
     """Carrega todos os CSVs de preço em memória. Retorna {ticker: df}."""
@@ -58,19 +89,38 @@ def _evaluate_candles(
     SELL: SL se High >= sl_price ; SG se Low  <= sg_price
 
     Se no mesmo candle SL e SG são tocados, assume-se SL (pior caso).
+    Com USE_TRAILING_STOP=True, o SG fixo é substituído por um stop móvel
+    que rastreia o melhor preço atingido (TRAIL_PCT de distância).
     """
+    best_price = entry  # referência para cálculo do trailing stop
+
     for _, row in candles.iterrows():
         dt    = row["Datetime"]
         high  = row["High"]
         low   = row["Low"]
         close = row["Close"]
 
-        if direction == "BUY":
-            sl_hit = pd.notna(low)  and low  <= sl_price
-            sg_hit = pd.notna(high) and high >= sg_price
-        else:  # SELL
-            sl_hit = pd.notna(high) and high >= sl_price
-            sg_hit = pd.notna(low)  and low  <= sg_price
+        if USE_TRAILING_STOP:
+            if direction == "BUY":
+                if pd.notna(high):
+                    best_price = max(best_price, high)
+                eff_sg = best_price * (1 - TRAIL_PCT)
+                sl_hit = pd.notna(low)  and low  <= sl_price
+                sg_hit = pd.notna(low)  and low  <= eff_sg
+            else:  # SELL
+                if pd.notna(low):
+                    best_price = min(best_price, low)
+                eff_sg = best_price * (1 + TRAIL_PCT)
+                sl_hit = pd.notna(high) and high >= sl_price
+                sg_hit = pd.notna(high) and high >= eff_sg
+        else:
+            eff_sg = sg_price
+            if direction == "BUY":
+                sl_hit = pd.notna(low)  and low  <= sl_price
+                sg_hit = pd.notna(high) and high >= eff_sg
+            else:  # SELL
+                sl_hit = pd.notna(high) and high >= sl_price
+                sg_hit = pd.notna(low)  and low  <= eff_sg
 
         if sl_hit:
             exit_price  = sl_price
@@ -78,7 +128,7 @@ def _evaluate_candles(
             exit_dt     = dt
             break
         if sg_hit:
-            exit_price  = sg_price
+            exit_price  = round(eff_sg, 2)
             exit_reason = "SG"
             exit_dt     = dt
             break
@@ -257,6 +307,12 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
 
     result_df = pd.DataFrame(results)
 
+    # ── Extrai Strategy / Trend_Filter / Entry_Window de Analysis_Type ───────
+    _parsed = result_df["Analysis_Type"].map(_parse_analysis_type)
+    result_df.insert(result_df.columns.get_loc("Analysis_Type") + 1, "Strategy",      _parsed.map(lambda x: x[0]))
+    result_df.insert(result_df.columns.get_loc("Strategy")      + 1, "Trend_Filter",  _parsed.map(lambda x: x[1]))
+    result_df.insert(result_df.columns.get_loc("Trend_Filter")  + 1, "Entry_Window",  _parsed.map(lambda x: x[2]))
+
     # ── Diagnóstico de consistência do SL ────────────────────────────────────
     # Caso A: Exit_Reason=SL mas SL_reachable=False → possível bug
     sl_false_hit = result_df[(result_df["Exit_Reason"] == "SL") & (~result_df["SL_reachable"])]
@@ -300,10 +356,10 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     # ── Resumo 1: por Stop (SL_pct / SG_pct) ─────────────────────────────
     summary_stop = _add_flag(result_df.groupby(["SL_pct", "SG_pct"]).agg(**agg_spec).round(4))
 
-    # ── Resumo 2: por Estratégia (Analysis_Type + Threshold + Stop) ───────
+    # ── Resumo 2: por Estratégia (Strategy + filtros + Threshold + Stop) ──
     summary_strategy = _add_flag(
         result_df
-        .groupby(["Analysis_Type", "Threshold_pct", "Signal", "SL_pct", "SG_pct"])
+        .groupby(["Strategy", "Trend_Filter", "Entry_Window", "Threshold_pct", "Signal", "SL_pct", "SG_pct"])
         .agg(**agg_spec)
         .round(4)
     )
@@ -311,7 +367,7 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
     # ── Resumo 3: consolidado por Estratégia (sem detalhe de stop) ────────
     summary_consolidated = _add_flag(
         result_df
-        .groupby(["Analysis_Type", "Threshold_pct", "Signal"])
+        .groupby(["Strategy", "Trend_Filter", "Entry_Window", "Threshold_pct", "Signal"])
         .agg(**agg_spec)
         .round(4)
     )
