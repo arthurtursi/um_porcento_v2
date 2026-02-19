@@ -11,10 +11,10 @@ BACKTEST_DIR    = "backtest"
 THRESHOLDS     = [0.01, 0.02]               # 1% e 2%
 
 # Stops finos: aplicados sobre o preço de entrada
-FINE_SL        = [0.0020, 0.0050, 0.0075]  # 0.20%, 0.50%, 0.75%
-FINE_SG        = [0.0020, 0.0050, 0.0075]
+FINE_SL        = [0.0020, 0.0050, 0.0075, 0.0100]  # 0.20%, 0.50%, 0.75%, 1.00%
+FINE_SG        = [0.0020, 0.0050, 0.0075, 0.0100]
 
-# Todas as combinações (SL, SG) — 3×3 = 9 pares
+# Todas as combinações (SL, SG) — 4×4 = 16 pares
 STOP_PAIRS     = [(sl, sg) for sl in FINE_SL for sg in FINE_SG]
 
 # ─────────────────────────────────────────────────────────────────────────────
