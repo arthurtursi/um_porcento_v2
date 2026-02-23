@@ -372,30 +372,51 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         .round(4)
     )
 
+    # ── Resumo 4: mensal ─────────────────────────────────────────────────────
+    result_df["Mes"] = pd.to_datetime(result_df["Signal_Date"]).dt.to_period("M").astype(str)
+    agg_spec_monthly = {
+        "Trades":         ("PL_BRL", "count"),
+        "PL_BRL_total":   ("PL_BRL", "sum"),
+        "PL_BRL_medio":   ("PL_BRL", "mean"),
+        "PL_BRL_max":     ("PL_BRL", "max"),
+        "PL_BRL_min":     ("PL_BRL", "min"),
+        "PL_pts_total":   ("PL_abs", "sum"),
+        "PL_pts_medio":   ("PL_abs", "mean"),
+        "WinRate_pct":    ("Exit_Reason", lambda x: round(100 * (x == "SG").sum() / len(x), 2)),
+        "SG_hits":        ("Exit_Reason", lambda x: (x == "SG").sum()),
+        "SL_hits":        ("Exit_Reason", lambda x: (x == "SL").sum()),
+        "EOD_hits":       ("Exit_Reason", lambda x: (x == "EOD").sum()),
+    }
+    summary_monthly = result_df.groupby("Mes").agg(**agg_spec_monthly).round(4)
+
     base_name   = os.path.splitext(os.path.basename(signals_path))[0]
     out_path    = os.path.join(out_dir, f"eval_{base_name}.csv")
     stop_path   = os.path.join(out_dir, f"eval_{base_name}_by_stop.csv")
     strat_path  = os.path.join(out_dir, f"eval_{base_name}_by_strategy.csv")
     consol_path = os.path.join(out_dir, f"eval_{base_name}_consolidated.csv")
+    monthly_path = os.path.join(out_dir, f"eval_{base_name}_monthly.csv")
 
     result_df.to_csv(out_path, index=False)
     summary_stop.to_csv(stop_path)
     summary_strategy.to_csv(strat_path)
     summary_consolidated.to_csv(consol_path)
+    summary_monthly.to_csv(monthly_path)
 
     # ── Salva também em xlsx ──────────────────────────────────────────────────
     xlsx_path = os.path.join(out_dir, f"eval_{base_name}.xlsx")
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        result_df.to_excel(writer, sheet_name="Detalhado", index=False)
-        summary_stop.to_excel(writer, sheet_name="Por_Stop")
-        summary_strategy.to_excel(writer, sheet_name="Por_Estrategia")
-        summary_consolidated.to_excel(writer, sheet_name="Consolidado")
+        result_df.to_excel(writer, sheet_name="Detalhado", index=False, merge_cells=False)
+        summary_stop.to_excel(writer, sheet_name="Por_Stop", merge_cells=False)
+        summary_strategy.to_excel(writer, sheet_name="Por_Estrategia", merge_cells=False)
+        summary_consolidated.to_excel(writer, sheet_name="Consolidado", merge_cells=False)
+        summary_monthly.to_excel(writer, sheet_name="Mensal", merge_cells=False)
     print(f"[EVAL] Arquivo xlsx salvo em:  {xlsx_path}")
 
     print(f"[EVAL] {len(result_df)} operação(ões) detalhadas em: {out_path}")
     print(f"[EVAL] Resumo por stop:       {stop_path}")
     print(f"[EVAL] Resumo por estratégia: {strat_path}")
     print(f"[EVAL] Consolidado:           {consol_path}")
+    print(f"[EVAL] Mensal:                {monthly_path}")
 
     print("\n── Consolidado por Estratégia ───────────────────────────────────────")
     print(summary_consolidated.to_string())
@@ -407,6 +428,8 @@ def evaluate(signals_path: str, data_cache_dir=DATA_CACHE_DIR, out_dir=BACKTEST_
         print("\n★  Nenhuma estratégia atingiu os critérios (WinRate ≥ 60% e lucro positivo).")
     print("\n── Resumo por Stop (SL_pct x SG_pct) ──────────────────────────────")
     print(summary_stop.to_string())
+    print("\n── Resumo Mensal ────────────────────────────────────────────────────")
+    print(summary_monthly.to_string())
 
     return result_df
 

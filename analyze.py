@@ -8,7 +8,7 @@ DATA_CACHE_DIR  = "data_cache"
 SIGNALS_DIR     = "signals"
 BACKTEST_DIR    = "backtest"
 
-THRESHOLDS     = [0.01, 0.02]               # 1% e 2%
+THRESHOLDS     = [0.005, 0.0075, 0.0087,0.01,0.011, 0.0125, 0.015,0.0175,0.02]               # 1% e 2%
 
 # Stops finos: aplicados sobre o preço de entrada
 FINE_SL        = [0.0020, 0.0050, 0.0075, 0.0100]  # 0.20%, 0.50%, 0.75%, 1.00%
@@ -61,7 +61,7 @@ def _make_signal(ticker, analysis_type, ref_price, ref_datetime,
         "Reference_Price": round(ref_price, 2),
         "Reference_DT":    ref_datetime,
         "Signal":          direction,
-        "Threshold_pct":   f"{int(threshold_pct*100)}%",
+        "Threshold_pct":   f"{str(round(threshold_pct*100, 4)).rstrip('0').rstrip('.')}%",
         "Entry_Price":     round(entry_price, 2),
         "Entry_DT":        entry_dt,
         # SG natural = ref_price (alvo de reversão à média)
